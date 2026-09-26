@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: civicpulse-config
+  namespace: civicpulse
+data:
+  ENVIRONMENT: production
+  REDIS_URL: redis://redis:6379/0
+  TRIAGE_PROVIDER: "${TRIAGE_PROVIDER}"
+  GROQ_MODEL: openai/gpt-oss-20b
+  OLLAMA_URL: http://ollama:11434
+  OLLAMA_MODEL: llama3.2:1b
+  RATE_LIMIT_REQUESTS: "30"
+  RATE_LIMIT_WINDOW_SECONDS: "60"
+  # Set this to the Pod CIDR or explicit addresses used by the Ingress controller in each cluster.
+  TRUSTED_PROXY_CIDRS: "10.0.0.0/8"
