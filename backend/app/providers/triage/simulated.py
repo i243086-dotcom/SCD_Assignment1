@@ -22,7 +22,14 @@ class SimulatedTriage:
             return TriageResult.model_validate({'category': 'invalid', 'priority': 'normal', 'summary': 'bad', 'confidence': 0.5})
         base = self.rules.triage(text, location)
         digest = hashlib.sha256(f'{text}|{location}|civicpulse'.encode()).digest()
-        categories = list(Category)
+        categories: tuple[Category, ...] = (
+            Category.WATER,
+            Category.ELECTRICITY,
+            Category.SANITATION,
+            Category.ROADS,
+            Category.STREETLIGHTS,
+            Category.OTHER,
+        )
         if base.category == Category.OTHER:
             base.category = categories[digest[0] % len(categories)]
         if digest[1] % 11 == 0 and base.priority == Priority.NORMAL:
