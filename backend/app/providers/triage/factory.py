@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from ...config import get_settings
 from .base import TriageProvider
 from .llm import LLMTriage
@@ -10,7 +12,7 @@ from .simulated import SimulatedTriage
 
 def create_triage_provider(name: str | None = None) -> TriageProvider:
     selected = (name or get_settings().triage_provider).lower()
-    providers = {
+    providers: dict[str, Callable[[], TriageProvider]] = {
         'llm': LLMTriage,
         'groq': LLMTriage,
         'ollama': OllamaTriage,

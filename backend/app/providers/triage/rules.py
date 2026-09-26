@@ -25,7 +25,11 @@ class RuleBasedTriage:
             category: sum(1 for term in terms if term in haystack)
             for category, terms in self.CATEGORY_TERMS.items()
         }
-        category = max(scores, key=scores.get) if max(scores.values(), default=0) else Category.OTHER
+        category = (
+            max(scores, key=lambda candidate: scores[candidate])
+            if max(scores.values(), default=0)
+            else Category.OTHER
+        )
         if any(term in haystack for term in self.HIGH_TERMS):
             priority = Priority.HIGH
         elif any(term in haystack for term in self.LOW_TERMS):
