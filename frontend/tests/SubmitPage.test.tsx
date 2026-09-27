@@ -16,7 +16,7 @@ const created = {
 
 test('client-side validation blocks too-short complaint', async () => {
   render(<SubmitPage />)
-  fireEvent.change(screen.getByLabelText('Complaint'), { target: { value: 'short' } })
+  fireEvent.change(screen.getByLabelText(/complaint/i), { target: { value: 'short' } })
   fireEvent.change(screen.getByLabelText('Location'), { target: { value: 'Peshawar' } })
   fireEvent.click(screen.getByRole('button', { name: /submit complaint/i }))
   expect(await screen.findByRole('alert')).toHaveTextContent('at least 10 characters')
@@ -27,7 +27,7 @@ test('shows honest loading state and renders triage result', async () => {
   let resolve!: (value: typeof created) => void
   vi.mocked(api.submitComplaint).mockImplementation(() => new Promise((r) => { resolve = r }))
   render(<SubmitPage />)
-  fireEvent.change(screen.getByLabelText('Complaint'), { target: { value: created.text } })
+  fireEvent.change(screen.getByLabelText(/complaint/i), { target: { value: created.text } })
   fireEvent.change(screen.getByLabelText('Location'), { target: { value: created.location } })
   fireEvent.click(screen.getByRole('button', { name: /submit complaint/i }))
   expect(screen.getByRole('button', { name: /ai triage in progress/i })).toBeDisabled()
