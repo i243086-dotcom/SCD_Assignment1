@@ -20,3 +20,5 @@ coverage/
 .vscode/
 *.log
 kubeconfig*
+
+*.egg-info/

@@ -94,7 +94,7 @@ class ComplaintRepository:
         total = int(self.session.scalar(select(func.count()).select_from(Complaint)) or 0)
         return {'by_category': by_category, 'by_priority': by_priority, 'total': total}
 
-    def ensure_seed(self, rows: list[dict[str, object]]) -> int:
+    def ensure_seed(self, rows: Sequence[dict[str, object]]) -> int:
         inserted = 0
         for item in rows:
             complaint_id = item['id']
