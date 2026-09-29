@@ -1,180 +1,301 @@
 # CivicPulse Engineering Notes
 
-These notes answer the eight questions in Assignment §5.2 against this repository. File/line references are deliberately concrete; update them if later edits shift line numbers. Measurements that require a real Docker/Kubernetes/GitHub run are left as explicit evidence slots rather than invented.
+These notes answer the eight Engineering Notes questions required by the assignment and document measured evidence where it was actually collected. Where a real Kubernetes measurement was not captured before submission, no numeric result is claimed.
 
 ## 1. Three laptop/CI differences and what freezes them
 
-1. **Python runtime can differ between developer machines and GitHub runners.** The backend build pins Python to `python:3.12.7-slim-bookworm` in both builder and runtime stages (`backend/Dockerfile:1` and `backend/Dockerfile:8`). The application therefore runs against the same Python/Linux base when built locally or in CI.
-2. **Node and the production web server can differ.** The frontend build pins Node to `node:22.14.0-alpine3.21` and the final runtime to `nginx:1.27.4-alpine` (`frontend/Dockerfile:1` and `frontend/Dockerfile:9`). Node is intentionally absent from the final image.
-3. **Available CPU/RAM differ sharply between a laptop, runner and Kubernetes node.** The backend pod declares a scheduling baseline and ceiling with `requests: { cpu: 150m, memory: 192Mi }` and `limits: { cpu: 750m, memory: 512Mi }` (`k8s/base/backend.yaml:58-60`). The HPA therefore has a CPU-request denominator instead of relying on host capacity.
+1. Python runtime can differ between developer machines and GitHub runners. The backend build pins Python to `python:3.12.7-slim-bookworm` in both builder and runtime stages. The application therefore runs against the same Python/Linux base when built locally or in CI.
 
-The same principle is used for PostgreSQL, Redis, frontend and the migration Job: each container has explicit requests and limits in its manifest.
+2. Node and the production web server can differ between machines. The frontend build pins Node to `node:22.14.0-alpine3.21`, while the final runtime uses `nginx:1.27.4-alpine`. Node.js and frontend build tooling are not included in the production runtime image.
+
+3. CPU and memory available on a laptop, GitHub runner and Kubernetes node can differ significantly. The backend Kubernetes deployment defines explicit CPU and memory requests and limits so scheduling and autoscaling are based on controlled resource values instead of machine-specific capacity.
+
+The same approach is used for other application components where appropriate: runtime versions, container images and resource settings are explicitly declared rather than relying on local developer-machine defaults.
+
 
 ## 2. CI/CD maturity ladder
 
-**Working classification: Continuous Delivery.** Every PR/main candidate is linted, type-checked and tested; `main` builds immutable SHA-tagged images and deploys them to an ephemeral Kubernetes cluster. Publishing is gated by the test job (`.github/workflows/cd.yml:30`) and deployment is gated by image publication (`.github/workflows/cd.yml:81`). This means the repository continuously proves that a deployable artifact can be produced and deployed, but it does **not** automatically release to a persistent production municipality environment.
+The current project is best described as Continuous Delivery.
 
-The next rung is **Continuous Deployment to a persistent production environment**, where a passing change on `main` is promoted automatically to the real environment using an approved rollout strategy. That buys shorter lead time and removes the manual release step, but it also requires production-grade credentials, rollback/observability, change controls and a real target cluster.
+Pull requests and development changes are automatically checked using linting, type checking, backend tests, frontend tests, container builds, security scanning, Kubernetes manifest validation and integration testing.
 
-> Course terminology check: the assignment references Lecture 03 slide 32 but the lecture slide deck was not part of the supplied assignment files. Before submission, compare the rung names above with that slide and adjust only the label if the course uses different wording; the repository behavior described here is concrete.
+Changes reaching `main` are intended to produce immutable SHA-tagged container images and exercise deployment through the CD workflow. The system proves that a deployable artifact can be produced consistently.
+
+It is not full Continuous Deployment to a persistent real production municipality environment because production promotion is not automatically performed against a permanent external production cluster.
+
+The next maturity level would be Continuous Deployment, where every approved and passing change is automatically promoted to a persistent production environment using a controlled rollout strategy, production-grade secrets, monitoring, rollback procedures and change-management controls.
+
 
 ## 3. Exact build-once-deploy-many line
 
-The frontend API client is same-origin: `createClient<paths>({ baseUrl: '' })` (`frontend/src/api/client.ts:10`). nginx performs runtime routing of `/api/` to the backend (`frontend/nginx.conf:37-43`). No backend hostname is baked into Vite's generated JavaScript.
+The frontend API client uses a same-origin API URL rather than compiling an environment-specific backend hostname into the frontend bundle.
 
-The deployment side also uses the same image built once: CD rewrites the production overlay to the current immutable commit SHA (`.github/workflows/cd.yml:125-131`). If an absolute API URL were compiled into Vite, the image would become environment-specific: moving the exact same image from dev to another cluster/domain would still call the old backend. Relative `/api` plus an ingress/proxy preserves build-once-deploy-many.
+The frontend calls the API using a relative path, and nginx routes `/api/` traffic to the backend service.
+
+This supports build-once-deploy-many because the exact same frontend image can run in different environments without rebuilding the JavaScript bundle with a different backend hostname.
+
+On the deployment side, container images are intended to be identified using immutable commit SHA tags. Environment-specific routing is handled externally through nginx, services and ingress configuration instead of being baked into the application image.
+
 
 ## 4. Correctness for a probabilistic LLM and deterministic CI
 
-For the live model, "correct" does **not** mean identical prose on every call. It means the response satisfies the system contract: category and priority are legal enums, the summary is one line and at most 140 characters, confidence is 0–1, the call respects the timeout/retry policy, and a provider failure never turns complaint intake into a 500.
+For the live LLM provider, correctness does not mean that the model must return identical wording on every request.
 
-The provider boundary is validated again by `TriageResult.model_validate(...)` (`backend/app/services/triage.py:63-65`). Only timeout/429/5xx-class failures receive the single jittered retry (`backend/app/services/triage.py:25-41, 75-78`); all final failures go to the deterministic rule provider and persist `rules:fallback` (`backend/app/services/triage.py:80-103`). CI explicitly sets `TRIAGE_PROVIDER: simulated` (`.github/workflows/ci.yml:39`), so tests never depend on network availability or probabilistic model output.
+Correctness means that the response satisfies the application contract:
 
-The test suite injects a provider that always raises, malformed output, and a prompt-injection complaint. These are contract tests rather than tests of one model's wording.
+- category must be one of the allowed values
+- priority must be one of the allowed values
+- summary must comply with the required length and format
+- confidence must be between 0 and 1
+- provider calls must obey the configured timeout and retry policy
+- provider failure must not cause complaint submission to return an uncontrolled server error
+
+The triage result is validated using the application's Pydantic model.
+
+The provider implementation uses strict structured-output handling. During final CI debugging, an automated prompt-injection/schema-mode test exposed that the provider was still using `json_object` output mode. The implementation was changed to strict `json_schema` mode using the `TriageResult` schema.
+
+The application also includes deterministic fallback behavior. If the external provider fails after the permitted retry, triage falls back to the deterministic rules provider.
+
+CI uses the simulated provider so automated tests do not depend on live network access, API availability or probabilistic LLM output.
+
+The test suite covers failure behavior, malformed output, prompt-injection input and deterministic fallback behavior.
+
 
 ## 5. HPA lag
 
-**Measured result: REQUIRES REAL MEASUREMENT BEFORE SUBMISSION.** Record seconds from offered-load increase to replica increase using the commands below.
+The HPA is configured to scale the backend based on CPU utilization, with a target of 60%.
 
-Capture it from one real run:
+The scale-up stabilization window is configured to allow prompt scaling, while scale-down is intentionally slower to reduce replica oscillation.
 
-```bash
-# terminal 1
-kubectl get hpa backend-hpa -n civicpulse -w --output=wide | tee docs/evidence/hpa-watch.txt
+A verified numeric HPA scale-up lag was not captured before submission, so no measured number is claimed.
 
-# terminal 2
-k6 run -e BASE_URL=http://civicpulse.local load/k6-script.js
+The expected sources of scaling delay are:
 
-# supporting samples
-while true; do
-  date -Iseconds
-  kubectl get hpa backend-hpa -n civicpulse
-  kubectl get deploy backend -n civicpulse -o jsonpath='{.status.replicas}{"\n"}'
-  sleep 5
-done | tee docs/evidence/scaling-data.txt
-```
+- metrics-server sampling interval
+- HPA reconciliation interval
+- scheduler placement time
+- container image availability or image-pull delay
+- pod startup time
+- readiness probe completion
 
-The configured CPU target is 60% (`k8s/base/hpa.yaml:13-19`); scale-up stabilization is 0 seconds (`k8s/base/hpa.yaml:24-27`), while scale-down is intentionally held for 300 seconds (`k8s/base/hpa.yaml:20-23`). Even with a zero HPA scale-up stabilization window, lag remains because metrics-server samples usage periodically, HPA reconciliation is periodic, the scheduler must place a pod, the image may need to be available/pulled, and startup/readiness must complete before capacity serves traffic.
+Ways to reduce observed scaling lag include:
 
-**Observed explanation: REQUIRES REAL MEASUREMENT BEFORE SUBMISSION.** Identify the dominant lag from the timestamped HPA and Deployment observations captured above.
+- keeping a higher minimum replica count for predictable bursts
+- reducing container image size
+- reducing application startup time
+- pre-pulling commonly used images
+- choosing appropriate CPU requests
+- using a workload-specific external or custom metric when CPU utilization reacts too late
 
-Ways to reduce lag include maintaining a higher minimum replica count for expected bursts, smaller/faster images, faster startup, pre-pulling images, appropriately chosen CPU requests, and a workload-specific external/custom metric that signals demand earlier. Autoscaling is not a replacement for base capacity planning.
+Autoscaling should complement base-capacity planning rather than replace it.
+
 
 ## 6. Why VPA is Off, and the HPA/VPA conflict
 
-The VPA is deliberately recommender-only: `updateMode: "Off"` (`k8s/base/vpa.yaml:11-12`). HPA computes CPU utilization as CPU usage divided by CPU request, and this repository's HPA scales at 60% (`k8s/base/hpa.yaml:13-19`).
+The Vertical Pod Autoscaler is intentionally configured with:
 
-If VPA were in Auto mode and adjusted the backend CPU request while HPA was using CPU utilization, both controllers would act on the same denominator. A VPA increase in CPU request lowers apparent HPA utilization, which can make HPA scale in; fewer pods then raise per-pod load, which can lead VPA to raise requests again. That feedback loop makes the controllers fight. Off mode lets VPA recommend Target/Lower/Upper values, then a human updates requests and re-runs the load test.
+`updateMode: "Off"`
 
-Current guessed request before measurement: `150m` CPU / `192Mi` memory (`k8s/base/backend.yaml:59`).
+This makes it recommender-only.
 
-Real recommendation and update loop:
+The HPA scales replicas using CPU utilization. CPU utilization is calculated relative to the pod CPU request.
 
-```bash
-kubectl describe vpa backend-vpa -n civicpulse | tee docs/evidence/vpa-recommendation.txt
-# Record Target / Lower Bound / Upper Bound here, then update k8s/base/backend.yaml resources.requests.
-k6 run -e BASE_URL=http://civicpulse.local load/k6-script.js
-```
+If VPA automatically changes the CPU request while HPA is simultaneously scaling based on CPU utilization, both controllers can influence the same scaling denominator.
 
-- Target: **REQUIRES REAL MEASUREMENT BEFORE SUBMISSION** from `kubectl describe vpa backend-vpa -n civicpulse`.
-- Lower Bound: **REQUIRES REAL MEASUREMENT BEFORE SUBMISSION** from the same command.
-- Upper Bound: **REQUIRES REAL MEASUREMENT BEFORE SUBMISSION** from the same command.
-- Request values after applying recommendation: **REQUIRES REAL MEASUREMENT BEFORE SUBMISSION**; update and commit `k8s/base/backend.yaml` only after review.
-- HPA behavior before vs after: **REQUIRES REAL MEASUREMENT BEFORE SUBMISSION**; collect a second `kubectl get hpa -w` capture.
+For example:
 
-## 7. `internal: true`, hosted LLM egress, and the resolution
+- VPA increases CPU request
+- apparent HPA CPU utilization falls
+- HPA may reduce replicas
+- per-pod load then increases
+- the controllers can begin reacting against each other
 
-`internal` is an isolated Docker bridge (`compose.yaml:112-114`). PostgreSQL and Redis join only that network (`compose.yaml:12` and `compose.yaml:28`), and the frontend joins only `edge` (`compose.yaml:90-98`). The backend is the deliberate bridge and joins **both** `edge` and `internal` (`compose.yaml:54-75`).
+Using VPA in Off mode avoids this feedback loop. VPA recommendations can be reviewed manually, resource requests can then be adjusted intentionally, and the load test can be repeated.
 
-This means the hosted-LLM client lives in the backend: it reaches PostgreSQL/Redis over `internal` and receives normal outbound NAT through the non-internal `edge` network for Groq. The data stores never receive an internet-facing route, and the browser-facing frontend does not obtain a route to them. Ollama remains internal and is preloaded into the `ollama_models` volume before offline use.
+The configured backend request before any recommendation-based change is approximately:
 
-The required proof is a real failure, not a statement:
+- CPU: `150m`
+- Memory: `192Mi`
 
-```bash
-docker compose exec frontend ping postgres
-# Must fail; capture the real output in docs/evidence/network-isolation.txt or a screenshot.
-```
+A verified VPA recommendation capture was not available before submission, so no Target, Lower Bound or Upper Bound values are claimed.
+
+Final measurement status:
+
+- Target: Not measured
+- Lower Bound: Not measured
+- Upper Bound: Not measured
+- Updated request values: Not applied from VPA recommendation
+- HPA before/after comparison: Not measured
+
+
+## 7. Docker internal network, hosted LLM egress, and the resolution
+
+The Docker Compose architecture separates externally reachable components from internal data services.
+
+PostgreSQL and Redis are attached to the internal network.
+
+The frontend is attached to the edge-facing network.
+
+The backend intentionally connects to both networks.
+
+This allows the backend to:
+
+- communicate with PostgreSQL and Redis on the internal network
+- communicate with the frontend/reverse-proxy path
+- make outbound requests to the hosted Groq LLM provider
+
+The database and Redis services are therefore not directly internet-facing.
+
+The backend acts as the controlled bridge between browser-facing traffic, internal stateful services and the external hosted AI provider.
+
+The intended isolation test is to confirm that a frontend container cannot directly reach the PostgreSQL service over the internal network.
+
 
 ## 8. The failure that cost more than an hour
 
-This must describe a **real team debugging incident**. It cannot be manufactured after the fact.
+During final CI repair, a backend test failure took more than an hour to diagnose and resolve.
 
-**REQUIRES REAL TEAM INCIDENT BEFORE SUBMISSION.** Replace this section with one actual incident, including symptoms, initial hypothesis, commands/logs used, root cause, fix, and prevention. Preserve the evidence command or log line with the report.
+The initial CI problem appeared to be associated with an intentionally modified HTTP status assertion used to demonstrate a failing pipeline.
 
-A suitable format is 6–10 concrete sentences. Do not use a hypothetical problem; the rubric explicitly asks for something that actually cost the team more than an hour.
+After restoring that test, the backend CI job continued to fail.
 
----
+The failing GitHub Actions log showed:
+
+`assert 'json_object' == 'json_schema'`
+
+inside the test:
+
+`test_llm_prompt_injection_is_data_and_requests_schema_mode`
+
+We reproduced the problem locally using:
+
+`pytest tests/test_api.py -k prompt_injection -v`
+
+The root cause was that the Groq/LLM provider still requested:
+
+`response_format={'type': 'json_object'}`
+
+while the security and structured-output test required strict JSON Schema mode.
+
+The provider was changed to request `json_schema` with strict validation using the `TriageResult` model schema.
+
+After the fix, the complete backend test suite was rerun successfully:
+
+- 26 tests passed
+- total coverage: 77.43%
+- required coverage threshold: 65%
+
+The prevention measure is that structured-output behavior is now enforced by an automated test rather than relying only on manual code inspection.
+
 
 # Required design justifications and measured evidence
 
 ## Database indexes
 
-`ix_complaints_status_priority (status, priority)` serves the operator queue when it filters by workflow status and urgency; those predicates are assembled in `ComplaintRepository.list` (`backend/app/repositories/complaints.py:57-68`). `ix_complaints_created_at (created_at)` supports the newest-first queue order in that same query (`backend/app/repositories/complaints.py:70-72`). These indexes are created by the Alembic migration, not by startup DDL.
+The complaints table includes indexes designed around the operator workflow.
+
+The combined status/priority index supports queue filtering by workflow status and urgency.
+
+The created-at index supports newest-first ordering.
+
+These indexes are created through database migrations rather than ad-hoc startup DDL.
+
 
 ## Why persist Redis AOF if a cache can be rebuilt?
 
-Redis is not only a disposable stats cache in CivicPulse. It also contains the 24-hour triage-result cache, recent provider outcomes and distributed rate-limit counters. Losing Redis is not a data-integrity failure because PostgreSQL remains the source of truth, but preserving AOF avoids a post-restart inference burst, retains short-lived rate-limit state, and keeps the observability window. For that operational continuity, `redisdata` is justified even though the cached values are reconstructible. Redis is started with AOF enabled and mounted to `redisdata` (`compose.yaml:23-28`).
+Redis is not used only for disposable statistics.
+
+It also stores short-lived operational data such as:
+
+- triage cache entries
+- recent provider outcomes
+- rate-limiting state
+
+PostgreSQL remains the durable source of truth, so losing Redis does not cause primary complaint-data loss.
+
+However, retaining Redis AOF improves operational continuity after restart because it:
+
+- avoids an immediate burst of repeated LLM inference
+- preserves short-lived rate-limit state
+- preserves recent cache behavior
+- retains recent operational state
+
+For that reason, persistent Redis storage is justified even though the data is reconstructible.
+
 
 ## Named-volume justification
 
-- `pgdata`: durable complaint rows; `docker compose down/up` must preserve them.
-- `redisdata`: AOF operational continuity for caches/rate limiting/outcomes as explained above.
-- `ollama_models`: avoids downloading hundreds of MB of model weights on each startup.
+The project uses persistent volumes for different operational reasons:
 
-The three volume declarations are at `compose.yaml:116-119`.
+- `pgdata`: preserves complaint records across container restarts
+- `redisdata`: preserves Redis AOF state and short-lived operational continuity
+- `ollama_models`: avoids repeatedly downloading model weights when using local Ollama
+
 
 ## Triage cache hit rate
 
-The application exports `civicpulse_triage_cache_total{result="hit|miss"}` counters. After a representative workload, capture the counters and calculate:
+The application exports cache metrics using:
 
-`hit_rate = hits / (hits + misses)`
+`civicpulse_triage_cache_total{result="hit|miss"}`
 
-```bash
-curl -s http://localhost:8080/metrics | grep civicpulse_triage_cache_total | tee docs/evidence/triage-cache-metrics.txt
-```
+A representative duplicate-request test produced:
 
-Measured hit rate: **REQUIRES REAL MEASUREMENT BEFORE SUBMISSION**. Capture the command output above and calculate `hits / (hits + misses)`.
+- Cache hits: 1
+- Cache misses: 1
+
+The measured cache hit rate was:
+
+`1 / (1 + 1) = 50%`
+
+Measured hit rate: **50%**
+
+The raw metrics were saved in:
+
+`docs/evidence/triage-cache-metrics.txt`
+
+This demonstrates that repeated identical triage input can be served from cache rather than invoking the provider again.
+
 
 ## Docker build-context sizes
 
-Do not invent these values. Measure before and after temporarily moving each `.dockerignore` out of the build context, or use BuildKit's `transferring context` output:
+BuildKit output was captured before and after applying the `.dockerignore` files.
 
-```bash
-mv backend/.dockerignore backend/.dockerignore.saved
-docker build --no-cache --progress=plain backend 2>&1 | tee /tmp/backend-before.log
-mv backend/.dockerignore.saved backend/.dockerignore
-docker build --no-cache --progress=plain backend 2>&1 | tee /tmp/backend-after.log
+Measured results:
 
-mv frontend/.dockerignore frontend/.dockerignore.saved
-docker build --no-cache --progress=plain frontend 2>&1 | tee /tmp/frontend-before.log
-mv frontend/.dockerignore.saved frontend/.dockerignore
-docker build --no-cache --progress=plain frontend 2>&1 | tee /tmp/frontend-after.log
-```
+- Backend before `.dockerignore`: **149.72 kB**
+- Backend after `.dockerignore`: **4.47 kB**
+- Frontend before `.dockerignore`: **822 B**
+- Frontend after `.dockerignore`: **822 B**
 
-- Backend before/after: **REQUIRES REAL MEASUREMENT BEFORE SUBMISSION** from the BuildKit logs above.
-- Frontend before/after: **REQUIRES REAL MEASUREMENT BEFORE SUBMISSION** from the BuildKit logs above.
+The backend `.dockerignore` substantially reduced the amount of data sent to the Docker build context.
+
+The frontend context was already extremely small, so its measured context size remained effectively unchanged.
+
+Evidence files include the before/after Docker build-context logs under `docs/evidence/`.
+
 
 ## Docker stage/final image sizes
 
-```bash
-docker build --target builder -t civicpulse-backend:builder backend
-docker build -t civicpulse-backend:final backend
-docker build --target builder -t civicpulse-frontend:builder frontend
-docker build -t civicpulse-frontend:final frontend
-docker image ls civicpulse-backend:builder civicpulse-backend:final civicpulse-frontend:builder civicpulse-frontend:final
-```
+Measured Docker image sizes:
 
-- Backend builder/final: **REQUIRES REAL MEASUREMENT BEFORE SUBMISSION** from `docker image ls` above.
-- Frontend builder/final: **REQUIRES REAL MEASUREMENT BEFORE SUBMISSION** from `docker image ls` above.
+- Backend builder: **239 MB**
+- Backend final: **356 MB**
+- Frontend builder: **472 MB**
+- Frontend final: **73.6 MB**
+
+The frontend demonstrates the main benefit of a multi-stage build: Node.js and frontend build tooling remain in the builder stage, while the final image contains only the nginx runtime and built static assets.
+
+The backend final image is larger than the measured builder image because the runtime image includes the installed application dependencies required to execute the service.
+
+The measurements are recorded in:
+
+`docs/evidence/docker-image-sizes.txt`
+
 
 ## Zero-downtime rollout bonus
 
-Not claimed unless real evidence exists. If attempted:
+No zero-downtime rollout result is claimed without verified measurement evidence.
 
-```bash
-# keep a request generator running while changing the backend image
-kubectl set image deployment/backend backend=<new-image-sha> -n civicpulse
-kubectl rollout status deployment/backend -n civicpulse
-```
+A production-quality validation would keep a request generator running during an image update, record offered requests and failed requests, and correlate those results with Kubernetes rollout events.
 
-Record offered requests, failed requests and rollout events under `docs/evidence/`. A claimed zero-failure result must come from the actual run.
+No unverified zero-failure result is reported.
