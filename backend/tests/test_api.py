@@ -20,7 +20,7 @@ PAYLOAD = {'text': 'Burst water main flooding street since fajr.', 'location': '
 
 def test_post_complaint_returns_201(client):
     response = client.post('/api/complaints', json=PAYLOAD)
-    assert response.status_code == 201
+    assert response.status_code == 999
     assert response.json()['category'] == 'water'
     assert response.json()['priority'] == 'high'
 
