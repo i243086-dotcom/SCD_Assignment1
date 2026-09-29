@@ -46,7 +46,14 @@ class LLMTriage:
             'content': f'<complaint_data>\ntext: {safe_text}\nlocation: {safe_location}\n</complaint_data>',
         },
     ],
-    response_format={'type': 'json_object'},
+    response_format={
+    'type': 'json_schema',
+    'json_schema': {
+        'name': 'triage_result',
+        'strict': True,
+        'schema': TriageResult.model_json_schema(),
+    },
+},
 )
         content = response.choices[0].message.content or '{}'
         return TriageResult.model_validate(json.loads(content))
