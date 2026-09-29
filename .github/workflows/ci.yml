@@ -81,14 +81,14 @@ jobs:
           docker build -t civicpulse-backend:scan backend
           docker build -t civicpulse-frontend:scan frontend
       - name: Scan backend
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: civicpulse-backend:scan
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: '1'
       - name: Scan frontend
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: civicpulse-frontend:scan
           severity: HIGH,CRITICAL
