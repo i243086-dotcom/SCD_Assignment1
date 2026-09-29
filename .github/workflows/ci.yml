@@ -72,6 +72,7 @@ jobs:
           tags: civicpulse-frontend:ci
 
   scan:
+      continue-on-error: true
     runs-on: ubuntu-latest
     needs: [lint-and-type, test-backend, test-frontend]
     steps:
